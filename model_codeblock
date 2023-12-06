@@ -30,3 +30,592 @@ from tensorflow.keras.callbacks import EarlyStopping
 from skopt import BayesSearchCV
 from skopt.space import Real, Integer
 from lightgbm.callback import early_stopping
+
+
+df_original = pd.read_excel("wftotal.xls")
+
+
+df_original
+
+
+#i will drop the source column
+
+df = df_original.drop('Source', axis=1)
+
+df
+
+#looking at the missing values
+df.isna().sum()
+
+df.isna().sum().sum()
+
+#lets see the datatypees
+data_types = df.dtypes
+print(data_types)
+
+
+
+
+# Loop over columns and fill missing values with the median only for numeric columns
+for column in df.select_dtypes(include=['float64', 'int64']).columns:  # Adjust types if necessary
+    if df[column].isna().sum() <= 5:
+        df[column].fillna(df[column].median(), inplace=True)
+
+
+#The States column is categorical. Assuming the data is missing at random, I would impute with the most frequent state, which is the mode.
+
+#there are only 4 missing states in 30ish k datapoint so i will use mode
+
+df['States'].fillna(df['States'].mode()[0], inplace=True)
+
+
+df.isna().sum()
+
+#the uti_card_50plus_pct   and  rep_income  have significant number of missing values
+
+
+
+
+# Check if missingness is related to default
+missingness_relation = df.groupby(df['uti_card_50plus_pct'].isna())['Default_ind'].mean()
+
+
+
+
+missingness_relation
+
+# Create indicator and impute if necessary
+df['uti_card_50plus_pct_missing'] = df['uti_card_50plus_pct'].isna().astype(int)
+df['uti_card_50plus_pct'].fillna(df['uti_card_50plus_pct'].median(), inplace=True)  # or another strategy
+
+df.isna().sum()
+
+
+
+# Assuming 'df' is your DataFrame and 'rep_income' is the column with missing values
+
+# Before you proceed, make sure 'Default_ind' column exists
+if 'Default_ind' not in df.columns:
+    raise ValueError("The column 'Default_ind' was not found in the DataFrame.")
+
+# Selecting features excluding 'Default_ind' to avoid leakage
+features_for_imputation = df.drop(columns=['Default_ind'], errors='ignore')
+
+# Now let's exclude any non-numeric columns to avoid errors with KNNImputer
+numeric_cols = features_for_imputation.select_dtypes(include=[np.number]).columns.tolist()
+features_for_imputation = features_for_imputation[numeric_cols]
+
+# Standardize the numeric features and then apply KNN imputation
+pipeline = make_pipeline(
+    StandardScaler(),
+    KNNImputer(n_neighbors=5)
+)
+
+# Fit and transform the features
+df_imputed = pipeline.fit_transform(features_for_imputation)
+
+# Convert the output back into a DataFrame
+df_imputed = pd.DataFrame(df_imputed, columns=numeric_cols, index=df.index)
+
+# Update the original DataFrame with the imputed values
+df.update(df_imputed)
+
+# Print out the DataFrame to confirm the imputation
+print(df.head())
+
+
+df.isna().sum()
+
+df
+
+
+
+#!pip install category_encoders
+
+
+df = pd.read_excel('pre_processed.xlsx')
+X = df.drop('Default_ind', axis=1)
+X_encoded = pd.get_dummies(X, columns=['States'], drop_first=False)
+X_encoded = X_encoded.astype(int)
+# df['Default_ind'] = df['Default_ind'].map({1: 'Defaulted', 0: 'Not Defaulted'})
+y = df['Default_ind']
+# Identifying indices with missing 'y' values
+missing_indices = y[y.isnull()].index
+# Dropping corresponding rows from both 'X_encoded' and 'y'
+X_encoded.drop(missing_indices, inplace=True)
+y.drop(missing_indices, inplace=True)
+y.head()
+
+# assuming X_encoded and y are already defined as I coded in the codeblock above
+X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42)
+
+# StratifiedKFold
+n_splits = 5
+kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+# Lists to store metrics for each fold
+accuracies = []
+precisions = []
+recalls = []
+f1_scores = []
+
+# Stratified K-Fold Cross-Validation
+for train, val in kf.split(X_train, y_train):
+    # Split the data into k-folds
+    X_train_fold, X_val_fold = X_train.iloc[train], X_train.iloc[val]
+    y_train_fold, y_val_fold = y_train.iloc[train], y_train.iloc[val]
+
+    # Initialize SMOTE and resample the training part of the fold
+    smote = SMOTE(random_state=42)
+    X_train_smote, y_train_smote = smote.fit_resample(X_train_fold, y_train_fold)
+
+    # Train the logistic regression model on the SMOTE-resampled training data
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_train_smote, y_train_smote)
+
+    # Make predictions on the validation fold
+    y_pred_fold = model.predict(X_val_fold)
+
+    # Calculate metrics for the current fold
+    accuracies.append(accuracy_score(y_val_fold, y_pred_fold))
+    precisions.append(precision_score(y_val_fold, y_pred_fold))
+    recalls.append(recall_score(y_val_fold, y_pred_fold))
+    f1_scores.append(f1_score(y_val_fold, y_pred_fold))
+
+# Calculate the average metric across all folds
+average_accuracy = np.mean(accuracies)
+average_precision = np.mean(precisions)
+average_recall = np.mean(recalls)
+average_f1_score = np.mean(f1_scores)
+
+# Output the average metrics
+print(f"Average Accuracy: {average_accuracy}")
+print(f"Average Precision: {average_precision}")
+print(f"Average Recall: {average_recall}")
+print(f"Average F1 Score: {average_f1_score}")
+
+# You can now train your final model on the whole training set if needed
+# Or you can pick the model from the best-performing fold
+
+
+
+# Loading your preprocessed data
+df = pd.read_excel('pre_processed.xlsx')
+# Preparing input features
+X = df.drop('Default_ind', axis=1)
+X_encoded = pd.get_dummies(X, columns=['States'], drop_first=False)
+X_encoded = X_encoded.astype(int)
+# Encode target variable
+label_encoder = LabelEncoder()
+y = label_encoder.fit_transform(df['Default_ind'])
+# Normalize the input features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_encoded)
+X_scaled
+
+
+# 10-fold cross-validation
+kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+# Lists -metrics for each fold
+f1_scores = []
+recall_scores = []
+precision_scores = []
+accuracy_scores = []
+
+for train, test in kfold.split(X_scaled, y):
+    smote = SMOTE()
+    X_train_smote, y_train_smote = smote.fit_resample(X_scaled[train], y[train])
+
+    # # Calculate class weights for the oversampled dataset
+    # class_weights = sk_class_weight.compute_class_weight('balanced', classes=np.unique(y_train_smote), y=y_train_smote)
+    # class_weights = dict(enumerate(class_weights))
+
+    # Create the model
+    model = Sequential()
+    model.add(Dense(512, activation='relu', input_shape=(X_scaled.shape[1],)))
+    model.add(Dense(256, activation='relu'))
+    model.add(Dense(128, activation='relu'))
+    model.add(Dense(64, activation='relu'))
+    model.add(Dense(32, activation='relu')) # Additional hidden layer
+    model.add(Dense(1, activation='sigmoid'))
+
+
+    # Early stopping
+    early_stopping = EarlyStopping(monitor='loss', patience=10, verbose=1)
+
+    # Compile the model
+    model.compile(optimizer='adam', loss='binary_crossentropy',metrics=['accuracy'])
+
+    # Train the model
+    model.fit(X_train_smote, y_train_smote, epochs=100, batch_size=256, verbose=0, callbacks=[early_stopping]) #, class_weight=class_weights)
+
+    # Predict on the test set
+    y_pred = model.predict(X_scaled[test])
+    y_pred = np.round(y_pred).astype(int).flatten()
+
+    # Calculate metrics
+    f1 = f1_score(y[test], y_pred, average='binary')
+    recall = recall_score(y[test], y_pred, average='binary')
+    precision = precision_score(y[test], y_pred, average='binary')
+    accuracy = accuracy_score(y[test], y_pred)
+
+    # Append scores
+    f1_scores.append(f1)
+    recall_scores.append(recall)
+    precision_scores.append(precision)
+    accuracy_scores.append(accuracy)
+
+# Calculate average scores
+average_f1 = np.mean(f1_scores)
+average_recall = np.mean(recall_scores)
+average_precision = np.mean(precision_scores)
+average_accuracy = np.mean(accuracy_scores)
+
+print(f"Average F1-Score: {average_f1:.2f}")
+print(f"Average Recall: {average_recall:.2f}")
+print(f"Average Precision: {average_precision:.2f}")
+print(f"Average Accuracy: {average_accuracy:.2f}")
+
+
+
+df = pd.read_excel('pre_processed.xlsx')
+X = df.drop('Default_ind', axis=1)
+X_encoded = pd.get_dummies(X, columns=['States'], drop_first=False)
+X_encoded = X_encoded.astype(int)
+df['Default_ind'] = df['Default_ind'].map({1: 'Defaulted', 0: 'Not Defaulted'})
+y = df['Default_ind']
+# Identifying indices with missing 'y' values
+missing_indices = y[y.isnull()].index
+# Dropping corresponding rows from both 'X_encoded' and 'y'
+X_encoded.drop(missing_indices, inplace=True)
+y.drop(missing_indices, inplace=True)
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import cross_val_score, KFold
+import numpy as np
+
+rf_model = RandomForestClassifier()
+
+# Initialize KFold
+kf = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
+
+# pipeline that first applies SMOTE and then fits the random forest model
+smote_pipeline = make_pipeline(SMOTE(random_state=42), rf_model)
+
+# Cross-validation for accuracy
+cv_accuracy = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='accuracy')
+print(f"Cross-validated Accuracy: {np.mean(cv_accuracy)}")
+
+# Cross-validation for precision
+cv_precision = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='precision_macro')
+print(f"Cross-validated Precision: {np.mean(cv_precision)}")
+
+# Cross-validation for recall
+cv_recall = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='recall_macro')
+print(f"Cross-validated Recall: {np.mean(cv_recall)}")
+
+# Cross-validation for F1-score
+cv_f1 = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='f1_macro')
+print(f"Cross-validated F1 Score: {np.mean(cv_f1)}")
+
+
+
+df = pd.read_excel('pre_processed.xlsx')
+X = df.drop('Default_ind', axis=1)
+X_encoded = pd.get_dummies(X, columns=['States'], drop_first=False)
+X_encoded = X_encoded.astype(int)
+df['Default_ind'] = df['Default_ind'].map({1: 'Defaulted', 0: 'Not Defaulted'})
+y = df['Default_ind']
+# Identifying indices with missing 'y' values
+missing_indices = y[y.isnull()].index
+# Dropping corresponding rows from both 'X_encoded' and 'y'
+X_encoded.drop(missing_indices, inplace=True)
+y.drop(missing_indices, inplace=True)
+
+svm_model = SVC()
+kf = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
+
+# Create a pipeline that first applies SMOTE and then fits the SVM model
+smote_pipeline = Pipeline([
+    ('smote', SMOTE(random_state=42)),
+    ('svm', svm_model)
+])
+
+# Cross-validation for accuracy
+cv_accuracy = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='accuracy')
+print(f"Cross-validated Accuracy: {np.mean(cv_accuracy)}")
+
+# Cross-validation for precision
+cv_precision = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='precision_macro')
+print(f"Cross-validated Precision: {np.mean(cv_precision)}")
+
+# Cross-validation for recall
+cv_recall = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='recall_macro')
+print(f"Cross-validated Recall: {np.mean(cv_recall)}")
+
+# Cross-validation for F1-score
+cv_f1 = cross_val_score(smote_pipeline, X_encoded, y, cv=kf, scoring='f1_macro')
+print(f"Cross-validated F1 Score: {np.mean(cv_f1)}")
+
+
+
+#pip install scikit-optimize
+
+
+# Load your preprocessed data
+df = pd.read_excel('pre_processed.xlsx')
+# Prepare your input features
+X = df.drop('Default_ind', axis=1)
+X_encoded = pd.get_dummies(X, columns=['States'], drop_first=False)
+X_encoded = X_encoded.astype(int)
+y = df["Default_ind"].astype(int)
+
+# Identifying indices with missing 'y' values
+missing_indices = y[y.isnull()].index
+# Dropping corresponding rows from both 'X_encoded' and 'y'
+X_encoded = X_encoded.drop(missing_indices)
+y = y.drop(missing_indices)
+y.head()
+
+X= X_encoded
+
+
+#!pip install optuna
+
+
+
+# Assume X and y are your dataset's features and target
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+def objective(trial):
+    # Stratified K-Fold Cross-Validation
+    kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    accuracies = []
+    precisions= []
+    recalls= []
+    f1_scores=[]
+
+    for train, val in kf.split(X_train, y_train):
+        X_train_part, X_val = X.iloc[train], X.iloc[val]
+        y_train_part, y_val = y.iloc[train], y.iloc[val]
+
+        # Apply SMOTE to the training part
+        smote = SMOTE(random_state=42)
+        X_train_smote, y_train_smote = smote.fit_resample(X_train_part, y_train_part)
+
+        # LightGBM dataset formatting
+        dtrain = lgb.Dataset(X_train_smote, label=y_train_smote)
+        dval = lgb.Dataset(X_val, label=y_val)
+
+        # Define hyperparameters to be tuned
+        param = {
+            "objective": "binary",
+            "metric": "binary_logloss",
+            "verbosity": -1,
+            "boosting_type": "gbdt",
+            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
+            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 2, 256),
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.4, 1.0),
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.4, 1.0),
+            "bagging_freq": trial.suggest_int("bagging_freq", 1, 7),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        }
+
+        # Train the model
+        gbm = lgb.train(param, dtrain)
+
+        # Predict on validation set
+        preds = gbm.predict(X_val)
+        y_pred_labels = np.rint(preds)
+
+        # Calculate accuracy
+        accuracies.append(accuracy_score(y_val, y_pred_labels))
+        precisions.append(precision_score(y_val, y_pred_labels))
+        recalls.append(recall_score(y_val, y_pred_labels))
+        f1_scores.append(f1_score(y_val, y_pred_labels))
+
+
+    # compute average of the meritics
+    avg_accuracy = np.mean(accuracies)
+
+    return avg_accuracy
+
+
+if __name__ == "__main__":
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=100, timeout=600)
+
+    print("Number of finished trials: ", len(study.trials))
+    print("Best trial:")
+    trial = study.best_trial
+
+    print("  Value: {}".format(trial.value))
+    print("  Params: ")
+    for key, value in trial.params.items():
+        print("    {}: {}".format(key, value))
+
+    # Use the best hyperparameters to train the model on the entire training-validation set
+    best_params = study.best_trial.params
+    smote = SMOTE(random_state=42)
+    X_train_val_smote, y_train_val_smote = smote.fit_resample(X_train, y_train)
+    dtrain_full = lgb.Dataset(X_train_val_smote, label=y_train_val_smote)
+    final_gbm = lgb.train(best_params, dtrain_full)
+
+    # Evaluate the model on the test set
+    test_preds = final_gbm.predict(X_test)
+    test_pred_labels = np.rint(test_preds)
+    test_accuracy = accuracy_score(y_test, test_pred_labels)
+    test_recall = recall_score(y_test, test_pred_labels)
+    test_precision= precision_score(y_test, test_pred_labels)
+    test_f1 = f1_score(y_test, test_pred_labels)
+
+    print("Accuracy:", test_accuracy)
+    print("Precision:", test_precision)
+    print("Recall:", test_recall)
+    print("F1 Score:", test_f1)
+
+
+
+# # Assume X and y are your dataset's features and target
+# # Split data into training, validation, and testing sets
+
+# Assume X and y are your dataset's features and target
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+def objective(trial):
+    # Stratified K-Fold Cross-Validation
+    kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    accuracies = []
+    precisions= []
+    recalls= []
+    f1_scores=[]
+
+    for train, val in kf.split(X_train, y_train):
+        X_train_part, X_val = X.iloc[train], X.iloc[val]
+        y_train_part, y_val = y.iloc[train], y.iloc[val]
+
+        # Apply SMOTE to the training part
+        smote = SMOTE(random_state=42)
+        X_train_smote, y_train_smote = smote.fit_resample(X_train_part, y_train_part)
+        # Convert the datasets into DMatrix
+        dtrain = xgb.DMatrix(X_train_smote, label=y_train_smote)
+        dval = xgb.DMatrix(X_val, label=y_val)
+        # Define hyperparameters to be tuned
+        params = {
+            "verbosity": 0,
+            "objective": "binary:logistic",
+            # use exact for small dataset.
+            "tree_method": "exact",
+            # defines booster, gblinear for linear functions.
+            "booster": trial.suggest_categorical("booster", ["gbtree", "gblinear", "dart"]),
+            # L2 regularization weight.
+            "lambda": trial.suggest_float("lambda", 1e-8, 1.0, log=True),
+            # L1 regularization weight.
+            "alpha": trial.suggest_float("alpha", 1e-8, 1.0, log=True),
+            # sampling ratio for training data.
+            "subsample": trial.suggest_float("subsample", 0.2, 1.0),
+            # sampling according to each tree.
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.2, 1.0),
+        }
+
+        # Train the model with the current hyperparameters
+        evals = [(dtrain, 'train'), (dval, 'eval')]
+        pruning_callback = optuna.integration.XGBoostPruningCallback(trial, 'eval-logloss')
+        bst = xgb.train(params, dtrain, evals=evals, early_stopping_rounds=10, callbacks=[pruning_callback])
+
+        # Get the best iteration and calculate the log loss on the validation set
+        best_iteration = bst.best_iteration
+        y_pred = bst.predict(dval, iteration_range=(0, best_iteration +1))
+        y_pred_labels = np.rint(y_pred)
+        loss = log_loss(y_val, y_pred)
+
+        # Calculate accuracy
+        accuracies.append(accuracy_score(y_val, y_pred_labels))
+        precisions.append(precision_score(y_val, y_pred_labels))
+        recalls.append(recall_score(y_val, y_pred_labels))
+        f1_scores.append(f1_score(y_val, y_pred_labels))
+
+
+    # compute average of the meritics
+    avg_accuracy = np.mean(accuracies)
+
+    return avg_accuracy
+
+
+
+if __name__ == "__main__":
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=100, timeout=600)
+
+    print("Number of finished trials: ", len(study.trials))
+    print("Best trial:")
+    trial = study.best_trial
+
+    print("  Value: {}".format(trial.value))
+    print("  Params: ")
+    for key, value in trial.params.items():
+        print("    {}: {}".format(key, value))
+
+    # Use the best hyperparameters to train the model on the entire training-validation set
+    best_params = study.best_trial.params
+    smote = SMOTE(random_state=42)
+    X_train_val_smote, y_train_val_smote = smote.fit_resample(X_train, y_train)
+
+    # Create DMatrix for XGBoost
+    dtrain_full = xgb.DMatrix(X_train_val_smote, label=y_train_val_smote)
+    dtest = xgb.DMatrix(X_test)
+
+    # Train the final XGBoost model
+    final_model = xgb.train(best_params, dtrain_full)
+
+    # Evaluate the model on the test set
+    test_preds = final_model.predict(dtest)
+    test_pred_labels = np.rint(test_preds)
+    test_accuracy = accuracy_score(y_test, test_pred_labels)
+    test_recall = recall_score(y_test, test_pred_labels)
+    test_precision= precision_score(y_test, test_pred_labels)
+    test_f1 = f1_score(y_test, test_pred_labels)
+
+    print("Accuracy:", test_accuracy)
+    print("Precision:", test_precision)
+    print("Recall:", test_recall)
+    print("F1 Score:", test_f1)
+
+
+# Assume X and y are your dataset's features and target
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train_part, X_val, y_train_part, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
+
+# Apply SMOTE to the training part
+smote = SMOTE(random_state=42)
+X_train_smote, y_train_smote = smote.fit_resample(X_train_part, y_train_part)
+
+# Setup the XGBoost Classifier
+modelXGB = xgboost.XGBClassifier(booster='gbtree', use_label_encoder=False, eval_metric='logloss')
+paramsXGB = {
+    'learning_rate': [1e-5, 1e-3],
+    'max_depth': [1, 2, 5, 7, 10],
+    'n_estimators': [50, 100, 200, 500]
+}
+
+# Setup GridSearchCV
+resXGB = GridSearchCV(modelXGB, cv=5, param_grid=paramsXGB, n_jobs=1, scoring=['accuracy', 'recall', 'precision'], refit='recall', verbose=2)
+
+# Fit the model
+resXGB.fit(X_train_smote, y_train_smote)
+
+# Evaluate the model on the test set
+best_model = resXGB.best_estimator_
+test_preds = best_model.predict(X_test)
+test_accuracy = accuracy_score(y_test, test_preds)
+test_recall = recall_score(y_test, test_preds)
+test_precision= precision_score(y_test, test_preds)
+test_f1 = f1_score(y_test, test_preds)
+
+print("Best Parameters:", resXGB.best_params_)
+print("Accuracy:", test_accuracy)
+print("Precision:", test_precision)
+print("Recall:", test_recall)
+print("F1 Score:", test_f1)
+
